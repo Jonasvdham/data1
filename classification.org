@@ -1,0 +1,836 @@
+#+TITLE: Classification
+#+AUTHOR: Jonas van der Ham | MSc MADE
+#+EMAIL: Jonasvdham@gmail.com
+#+DATE: Thursday, 21 October 2021
+#+STARTUP: showall
+#+PROPERTY: header-args :exports both :session class :cache no :tangle yes
+:PROPERTIES:
+#+OPTIONS: ^:nil
+#+LATEX_COMPILER: xelatex
+#+LATEX_CLASS: article
+#+LATEX_CLASS_OPTIONS: [logo, color, author]
+#+LATEX_HEADER: \insertauthor
+#+LATEX_HEADER: \usepackage{minted}
+#+LATEX_HEADER: \usepackage[style=ieee, citestyle=numeric-comp, isbn=false]{biblatex}
+#+LATEX_HEADER: \addbibresource{~/made/bibliography/references.bib}
+#+LATEX_HEADER: \setminted{bgcolor=WhiteSmoke}
+#+OPTIONS: toc:nil
+:END:
+
+* Imports
+
+#+begin_src R :results silent
+options(max.print=100)
+library("ggplot2")
+library(rio)
+library(dplyr)
+library(tidyr)
+library(tree)
+library(e1071)
+library(randomForest)
+set.seed(0)
+commerce <- import("~/made/data1/project/data/amsterdam_commerce.csv", stringsAsFactors = TRUE)
+health <- import("~/made/data1/project/data/amsterdam_health.csv", stringsAsFactors = TRUE)
+housing <- import("~/made/data1/project/data/amsterdam_housing.csv", stringsAsFactors = TRUE)
+income <- import("~/made/data1/project/data/amsterdam_income.csv", stringsAsFactors = TRUE)
+population <- import("~/made/data1/project/data/amsterdam_population.csv", stringsAsFactors = TRUE)
+publicspace <- import("~/made/data1/project/data/amsterdam_publicspace.csv", stringsAsFactors = TRUE)
+social <- import("~/made/data1/project/data/amsterdam_social.csv", stringsAsFactors = TRUE)
+traffic <- import("~/made/data1/project/data/amsterdam_traffic.csv", stringsAsFactors = TRUE)
+#+end_src
+
+Let's create a data set, I think the AMS lite dataset is not part of the
+project. I will join some of the datasets I think would be most important here.
+For the final report we should definitely motivate the choice for certain
+datasets further.
+
+Let's just start with housing income population
+#+begin_src R :results silent
+houinc <- inner_join(housing, income, c("neighborhood", 'district', 'year'))
+houincpop <- inner_join(houinc, population, c("neighborhood", 'district', 'year'))
+#+end_src
+
+* Evaluation
+
+#+begin_src R :results silent
+accuracy <- function(y, yhat) {
+  sum(yhat == y) / length(y)
+}
+precision <- function(y, yhat, class) {
+  if(missing(class))
+    p <- sapply(levels(y), precision, y = y, yhat = yhat)
+  else
+    p <- sum(yhat == class & yhat == y) / sum(yhat == class)
+  ifelse(is.finite(p), p, 0)
+}
+recall <- function(y, yhat, class) {
+  if(missing(class))
+    r <- sapply(levels(y), recall, y = y, yhat = yhat)
+  else
+    r <- sum(yhat == class & yhat == y) / sum(y == class)
+  ifelse(is.finite(r), r, 0)
+}
+f <- function(y, yhat, class) {
+  if(missing(class))
+    ff <- sapply(levels(y), f, y = y, yhat = yhat)
+  else {
+    p <- precision(y, yhat, class)
+    r <- recall(y, yhat, class)
+    ff <- 2*p*r/(p+r)
+  }
+  ifelse(is.finite(ff), ff, 0)
+}
+
+# Function for quickly plotting confusion matrix:
+confusion <- function(model, y) {
+  p <- predict(model, type = "class")
+  cm <- table(truth = y, predicted = p)
+  ggplot(as.data.frame(cm), aes(predicted, truth)) +
+    geom_tile(aes(fill = Freq)) +
+    geom_text(aes(label = Freq)) +
+    scale_fill_gradient(low = "white", high = "lightblue")
+}
+#+end_src
+
+* Decision tree
+
+Let's build a tree with all features included:
+#+begin_src R :results silent
+tree <- tree(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc)
+summary(tree)
+#+end_src
+
+
+Variables actually used in tree construction:
+ [1] "hou_value_m2"    "inc_gini"        "hou_development" "hou_rented"
+ [5] "hou_owner"       "inc_theil"       "hou_boat"        "hou_occupants"
+ [9] "hou_total"       "inc_social"
+
+Plot the tree model:
+#+begin_src R :results silent
+plot(tree)
+text(tree)
+#+end_src
+
+Confusion matrix for predictions
+#+begin_src R :results silent
+confusion(tree, houinc$district)
+#+end_src
+
+#+begin_src R :results silen
+p <- predict(tree, type = "class")
+accuracy(houinc$district, p)
+precision(houinc$district, p)
+recall(houinc$district, p)
+#+end_src
+
+#+RESULTS:
+| 0.910714285714286 |
+|              0.84 |
+| 0.866666666666667 |
+| 0.493670886075949 |
+| 0.683544303797468 |
+| 0.459016393442623 |
+|  0.87037037037037 |
+
+These actually score quite well, predictions are good except:
+- Zuid is often predicted as West
+- Noord is often predicted as Nieuw-West
+
+** Pruning
+
+#+begin_src R :results silent
+tree2 <- prune.tree(tree, best = 13)
+summary(tree2)
+#+end_src
+
+Getting some weird error here, anyway we lose about 6% accuracy...
+#+begin_src R :results silent
+p2 <- predict(tree2, type = "class")
+#+end_src
+
+* Random forest
+
+
+#+begin_src R :results silent
+m3 <- randomForest(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc, mtry = 11, ntree = 500)
+
+p3 <- predict(m3)
+
+accuracy(houinc$district, p3) # bagging
+#+end_src
+
+approx 80% accuracy is not bad!
+
+* SVM
+
+** Polynomial kernel
+#+begin_src R :results silent
+svm <- svm(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc, kernel = "poly", degree = 2) # polynomial kernel, degree 2
+summary(svm)
+#+end_src
+
+
+#+begin_src R :results silent
+psvm <- predict(svm)
+
+accuracy(houinc$district, psvm)
+precision(houinc$district, psvm)
+recall(houinc$district, psvm)
+f(houinc$district, psvm)
+cm <- table(truth = houinc$district, predicted = psvm)
+ggplot(as.data.frame(cm), aes(predicted, truth)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "lightblue")
+#+end_src
+
+70% accuracy, not great tbh?
+
+** Radial kernel
+
+#+begin_src R :results silent
+svm <- svm(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc)
+summary(svm)
+#+end_src
+
+#+begin_src R :results silent
+psvm <- predict(svm)
+
+accuracy(houinc$district, psvm)
+precision(houinc$district, psvm)
+recall(houinc$district, psvm)
+f(houinc$district, psvm)
+cm <- table(truth = houinc$district, predicted = psvm)
+ggplot(as.data.frame(cm), aes(predicted, truth)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "lightblue")
+#+end_src
+
+84% accuracy, clear winner.
+
+** Cost to tune hyperparameters
+
+Set cost to 5
+
+#+begin_src R :results silent
+svm <- svm(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc, cost=5)
+summary(svm)
+#+end_src
+
+#+begin_src R :results silent
+psvm <- predict(svm)
+
+accuracy(houinc$district, psvm)
+precision(houinc$district, psvm)
+recall(houinc$district, psvm)
+f(houinc$district, psvm)
+cm <- table(truth = houinc$district, predicted = psvm)
+ggplot(as.data.frame(cm), aes(predicted, truth)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "lightblue")
+#+end_src
+
+"Almost 94% accuracy, that's super good!" - Jonas 2021
+
+|-----------+-----------+-----------+------------+-----------+-----------+-----------+-----------|
+| Measure   |   Centrum |      West | Nieuw-West |      Zuid |      Oost |     Noord |  Zuidoost |
+|-----------+-----------+-----------+------------+-----------+-----------+-----------+-----------|
+| Precision | 0.9454545 | 0.8958333 |  0.9473684 | 0.8750000 | 0.9729730 | 0.9677419 |         1 |
+| Recall    | 0.9285714 | 0.8600000 |  0.9600000 | 0.9746835 | 0.9113924 | 0.9836066 | 0.9814815 |
+| F1-score  | 0.9369369 | 0.8775510 |  0.9536424 | 0.9221557 | 0.9411765 | 0.9756098 | 0.9906542 |
+|-----------+-----------+-----------+------------+-----------+-----------+-----------+-----------|
+
+** Cost to tune hyperparameters
+
+Set cost to 10
+
+#+begin_src R :results silent
+svm <- svm(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc, cost=10)
+summary(svm)
+#+end_src
+
+#+begin_src R :results silent
+psvm <- predict(svm)
+
+accuracy(houinc$district, psvm)
+precision(houinc$district, psvm)
+recall(houinc$district, psvm)
+f(houinc$district, psvm)
+cm <- table(truth = houinc$district, predicted = psvm)
+ggplot(as.data.frame(cm), aes(predicted, truth)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "lightblue")
+#+end_src
+
+"Almost 96% accuracy, that's super good!" - Jonas 2021
+
+
+* cross-validation
+#+begin_src R :results silent
+## Function to do k-fold cross-validation with a dataset, to check how a model
+## behaves as a function of the values in H (eg. a hyperparameter such as tree depth,
+## or polynomial degree).
+## Response is the name of the response column, used to stratify the splits.
+## FUN is of the form function(training, validation, h), and must return a vector
+## with the model performance statistics of interest, such as accuracy and/or precision.
+kfold_cv <- function(data, response, k, H, FUN, ...) {
+
+  # randomly assign instances to folds in a column called .fold, stratified by class
+  data <- data %>%
+    group_by({{response}}) %>%
+    mutate(.fold = sample(rep(1:k, length.out = n()))) %>%
+    ungroup()
+  # for each value h in H to explore, do CV
+  all_folds <- sapply(H, function(h) {
+    # for each fold kk = 1...k
+    per_fold <- sapply(1:k, function(kk) {
+      # partition the data in training and validation
+      training <- data %>% filter(.fold != kk) # everything except fold kk
+      validation <- data %>% filter(.fold == kk) # only fold kk
+      # call the FUNction to train the model and compute performance
+      c(NA, FUN(training, validation, h, ...))
+    })
+    # average across folds
+    rowMeans(per_fold, na.rm = TRUE)
+  })
+  data.frame(.h = H, t(all_folds[-1,,drop=FALSE]))
+}
+#+end_src
+
+#+begin_src R :results silent
+fit_with_cost <- function(training, validation, h) {
+  m <- svm(district ~ hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+             hou_value_m2 + hou_satisfaction + hou_condition +
+             hou_maintenance + hou_neighborhood + hou_development +
+             hou_homefeel + inc_disposable + inc_q1 +
+             inc_q2 + inc_q3 + inc_q4 +
+             inc_q5 + inc_theil + inc_gini +
+             inc_social + inc_social_far + inc_disability +
+             inc_unemployment + inc_debt + inc_notifications,
+           data = training, cost = h)
+                                        # predict on validation set
+  p <- predict(m, validation)
+
+                                        # Compute evaluation metrics
+                                        # Note how for precision, recall and F we compute the mean score across classes
+  c(a = accuracy(validation$district, p),
+    p = mean(precision(validation$district, p)),
+    r = mean(recall(validation$district, p)),
+    f = mean(f(validation$district, p)))
+}
+#+end_src
+
+#+begin_src R :results silent
+set.seed(0)
+
+pr <- kfold_cv(houinc, district, 10, seq(10.5, 13, 0.1), fit_with_cost)
+
+pivot_longer(pr, cols=-.h, names_to = "metric") %>%
+  ggplot(aes(.h, value, color = metric)) +
+  geom_point() +
+  geom_smooth(se=FALSE) +
+  labs(x = "cost", y = "value") +
+  scale_x_log10()
+#+end_src
+
+cost=11.5 seems to be the best combination of Accuracy, precision, recall and
+f1-score. The precision peaks at cost=10 but is nearly identical at cost=11.5
+and all other measures reach peak performance at cost=11.5.
+
+#+begin_src R :results silent
+set.seed(0)
+
+pr <- kfold_cv(houinc, district, 10, seq(10, 15, 1), fit_with_cost)
+
+pivot_longer(pr, cols=-.h, names_to = "metric") %>%
+  ggplot(aes(.h, value, color = metric)) +
+  geom_point() +
+  geom_smooth(se=FALSE) +
+  labs(x = "cost", y = "value") +
+  scale_x_log10()
+#+end_src
+
+* Report
+
+Could be an idea to first test out the initial accuracy with different datasets
+on a decision tree. This gives insight into the most important features and how
+decisions are made. After we can extend to different less insightful models
+(randoms forests, SVMs) to try and reach optimal performance.
+
+** Feature importance
+
+Shows high correlation between district and square meter price.
+
+#+begin_src R :results silent
+library(corrplot)
+tmp <- houinc
+tmp$district <- unclass(tmp$district)
+tmp <- transform(tmp, district=as.numeric(district))
+
+corrplot(cor(tmp[(unlist(lapply(tmp, is.numeric)))]), type = "upper", order = "hclust", tl.col = "black", tl.srt = 45)
+#+end_src
+
+** Best SVM
+
+*** Houinc
+
+#+begin_src R :results silent
+svm <- svm(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications, houinc, cost=11.4)
+summary(svm)
+#+end_src
+
+#+begin_src R :results silent
+psvm <- predict(svm)
+
+accuracy(houinc$district, psvm)
+precision(houinc$district, psvm)
+recall(houinc$district, psvm)
+f(houinc$district, psvm)
+cm <- table(truth = houinc$district, predicted = psvm)
+ggplot(as.data.frame(cm), aes(predicted, truth)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "lightblue")
+#+end_src
+
+96.8% accuracy
+
+*** houincpop
+
+#+begin_src R :results silent
+svm <- svm(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications + pop_9 +pop_10_19 +pop_20_29 +
+pop_30_39 +pop_40_49 +pop_50_59 +
+pop_60_69 +pop_70_79 +pop_80_89 +
+pop_90 +pop_total +pop_male +
+pop_female +pop_laborforce +pop_unemployed +
+pop_dutch +pop_western +pop_nonwestern +
+pop_household_mar_wo +pop_household_mar_w +pop_household_unm_wo +
+pop_household_unm_w +pop_household_sin_wo +pop_household_sin_w +
+pop_household_other +pop_household_total +pop_births +
+pop_deaths +pop_nl2ams +pop_ams2nl +
+pop_other2nhood +pop_nhood2other +pop_within, houincpop, cost=11.4)
+summary(svm)
+#+end_src
+
+
+
+#+begin_src R :results silent
+psvm <- predict(svm)
+
+accuracy(houincpop$district, psvm)
+precision(houincpop$district, psvm)
+recall(houincpop$district, psvm)
+f(houincpop$district, psvm)
+cm <- table(truth = houincpop$district, predicted = psvm)
+ggplot(as.data.frame(cm), aes(predicted, truth)) +
+  geom_tile(aes(fill = Freq)) +
+  geom_text(aes(label = Freq)) +
+  scale_fill_gradient(low = "white", high = "lightblue")
+#+end_src
+
+98.4%
+
+
+* Classification analysis
+
+
+For the classification analysis, all available data could be used with the
+exception of the geographic variables `district' and `neighbourhood'. The
+assignment requires the use of different classifiers to predict the city
+district in Amsterdam using a selection of the available variables. It is
+expected that the choice of variables will have a large influence on the
+performance of the final models. To investigate this, domain knowledge is used
+so select two different datasets and compare them.
+
+Firstly, a dataset is created from the `housing', `income' and `population'
+data sources. Given the proper implementation, this dataset is expected to
+result in models with strong performance in terms of classification because of
+the high variability in socio-economic status throughout different districts in
+Amsterdam. In this dataset these differences are encapsulated in variables like
+`pop_nonwestern` (population), `inc_disposable` (income) and `hou_value`
+(housing).
+
+#+begin_src R :results silent
+housing <- import("~/made/data1/project/data/amsterdam_housing.csv",  stringsAsFactors = TRUE)
+income <- import("~/made/data1/project/data/amsterdam_income.csv",  stringsAsFactors = TRUE)
+population <- import("~/made/data1/project/data/amsterdam_population.csv",  stringsAsFactors = TRUE)
+houincpop <- inner_join(housing, income, c("neighborhood", 'district', 'year')) %>% inner_join(., population, c("neighborhood", 'district', 'year'))
+set.seed(0)
+#+end_src
+
+To relate back to the focus of the original research, a dataset is created with the
+social data source together with publicspace and population which have most
+available data, although this dataset is expected to result in lesser
+performance.
+
+#+begin_src R :results silent
+publicspace <- import("~/made/data1/project/data/amsterdam_publicspace.csv", stringsAsFactors = TRUE)
+social <- import("~/made/data1/project/data/amsterdam_social.csv", stringsAsFactors = TRUE)
+sopupo <- inner_join(social, publicspace, c("neighborhood", 'district', 'year')) %>% inner_join(., population, c("neighborhood", 'district', 'year'))
+# Dropping NA columns
+sopupo <- subset(sopupo, select=-c(soc_vocational, soc_higherprof, soc_uni))
+#+end_src
+
+** Decision trees
+
+As an initial method of evaluating the potential for our datasets to result in
+strong predictive models we will train decision trees using both. The
+expectation is that many variables are dropped and a small subset of important
+variables is kept in the model. Again, the first dataset is expected to result
+in the strongest predictive model.
+
+#+begin_src R :results silent
+tree1 <- tree(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications + pop_9 +pop_10_19 +pop_20_29 +
+pop_30_39 +pop_40_49 +pop_50_59 +
+pop_60_69 +pop_70_79 +pop_80_89 +
+pop_90 +pop_total +pop_male +
+pop_female +pop_laborforce +pop_unemployed +
+pop_dutch +pop_western +pop_nonwestern +
+pop_household_mar_wo +pop_household_mar_w +pop_household_unm_wo +
+pop_household_unm_w +pop_household_sin_wo +pop_household_sin_w +
+pop_household_other +pop_household_total +pop_births +
+pop_deaths +pop_nl2ams +pop_ams2nl +
+pop_other2nhood +pop_nhood2other +pop_within, houincpop)
+summary(tree1)
+#+end_src
+
+#+begin_src R :results silent
+plot(tree1)
+text(tree1, cex=.8)
+#+end_src
+
+#+begin_src R :results silent
+confusion(tree1, houincpop$district)
+p1 <- predict(tree1, type = "class")
+accuracy(houincpop$district, p1)
+precision(houincpop$district, p1)
+recall(houincpop$district, p1)
+#+end_src
+
+As a first model this already does quite well, with an accuracy of 76.7% and
+reasonable precision and recall across the districts. The tree is quite
+cluttered though and could likely easily be simplified.
+
+#+begin_src R :results silent
+tree2 <- tree(district ~ soc_fac_cultural +soc_fac_sports +soc_avail_sports +
+                soc_primary +soc_avail_primary +soc_special + soc_cito +
+                soc_interaction + soc_involvement + pub_setup +pub_houses +
+                pub_green + pub_clean_street +pub_clean_green +
+                pub_clean_play + pub_main_street +pub_main_green +
+                pub_main_play + pub_pollution +pub_area_land +pub_area_water +
+                pub_area_green + pub_area_sports +pub_safe_day +
+                pub_safe_night + pub_inc_criminal +pub_inc_neighbors +
+                pub_inc_others + pub_inc_catering + pop_9 +pop_10_19 +
+                pop_20_29 + pop_30_39 + pop_40_49 +pop_50_59 + pop_60_69 +
+                pop_70_79 +pop_80_89 + pop_90 +pop_total +pop_male +
+                pop_female +pop_laborforce + pop_unemployed + pop_dutch +
+                pop_western +pop_nonwestern + pop_household_mar_wo +
+                pop_household_mar_w + pop_household_unm_wo +
+                pop_household_unm_w + pop_household_sin_wo +
+                pop_household_sin_w + pop_household_other +
+                pop_household_total +pop_births + pop_deaths +pop_nl2ams +
+                pop_ams2nl + pop_other2nhood + pop_nhood2other +pop_within, drop_na(sopupo))
+summary(tree2)
+#+end_src
+
+#+begin_src R :results silent
+plot(tree2)
+text(tree2, cex=.8)
+#+end_src
+
+#+begin_src R :results silent
+confusion(tree2, drop_na(sopupo)$district)
+p2 <- predict(tree2, type = "class")
+accuracy(drop_na(sopupo)$district, p2)
+precision(drop_na(sopupo)$district, p2)
+recall(drop_na(sopupo)$district, p2)
+#+end_src
+
+In contrast to the expectation the second model performs slightly better than
+the first with an accuracy of 80% and also uses less variables and has less
+leaf nodes.
+
+As domain knowledge motivated the choice for the first dataset but the second
+dataset generated the best performing decision trees, more models will be
+created using both datasets. It should be noted that they overlap in their
+inclusion of the population dataset.
+
+** Random forests
+
+Implementing random forests seems useful here since we include many features
+(63). We will set mtry to 8 (almost $\sqrt[64]$) and apply cross validation to
+come up with an ideal number of trees.
+
+*** cross-validation
+
+Dataset 1
+
+#+begin_src R :results silent
+##Function to do k-fold cross-validation with a dataset, to check how a model
+## behaves as a function of the values in H (eg. a hyperparameter such as tree depth,
+## or polynomial degree).
+## Response is the name of the response column, used to stratify the splits.
+## FUN is of the form function(training, validation, h), and must return a vector
+## with the model performance statistics of interest, such as accuracy and/or precision.
+kfold_cv <- function(data, response, k, H, FUN, ...) {
+
+  # randomly assign instances to folds in a column called .fold, stratified by class
+  data <- data %>%
+    group_by({{response}}) %>%
+    mutate(.fold = sample(rep(1:k, length.out = n()))) %>%
+    ungroup()
+  # for each value h in H to explore, do CV
+  all_folds <- sapply(H, function(h) {
+    # for each fold kk = 1...k
+    per_fold <- sapply(1:k, function(kk) {
+      # partition the data in training and validation
+      training <- data %>% filter(.fold != kk) # everything except fold kk
+      validation <- data %>% filter(.fold == kk) # only fold kk
+      # call the FUNction to train the model and compute performance
+      c(NA, FUN(training, validation, h, ...))
+    })
+    # average across folds
+    rowMeans(per_fold, na.rm = TRUE)
+  })
+  data.frame(.h = H, t(all_folds[-1,,drop=FALSE]))
+}
+#+end_src
+
+#+begin_src R :results silent
+fit_with_ntrees <- function(training, validation, h) {
+m <- randomForest(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications + pop_9 +pop_10_19 +pop_20_29 +
+pop_30_39 +pop_40_49 +pop_50_59 +
+pop_60_69 +pop_70_79 +pop_80_89 +
+pop_90 +pop_total +pop_male +
+pop_female +pop_laborforce +pop_unemployed +
+pop_dutch +pop_western +pop_nonwestern +
+pop_household_mar_wo +pop_household_mar_w +pop_household_unm_wo +
+pop_household_unm_w +pop_household_sin_wo +pop_household_sin_w +
+pop_household_other +pop_household_total +pop_births +
+pop_deaths +pop_nl2ams +pop_ams2nl +
+pop_other2nhood +pop_nhood2other +pop_within, data = training, mtry = 8, ntree = h)
+
+                                        # predict on validation set
+  p <- predict(m, validation)
+
+                                        # Compute evaluation metrics
+                                        # Note how for precision, recall and F we compute the mean score across classes
+  c(a = accuracy(validation$district, p),
+    p = mean(precision(validation$district, p)),
+    r = mean(recall(validation$district, p)),
+    f = mean(f(validation$district, p)))
+}
+#+end_src
+
+#+begin_src R :results silent
+set.seed(0)
+
+pr <- kfold_cv(houincpop, district, 10, seq(200, 600, 100), fit_with_ntrees)
+
+pivot_longer(pr, cols=-.h, names_to = "metric") %>%
+  ggplot(aes(.h, value, color = metric)) +
+  geom_point() +
+  geom_smooth(se=FALSE) +
+  labs(x = "cost", y = "value") +
+  scale_x_log10()
+#+end_src
+
+Dataset 2
+
+#+begin_src R :results silent
+fit_with_ntrees2 <- function(training, validation, h) {
+  m <- randomForest(district ~ soc_fac_cultural +soc_fac_sports +soc_avail_sports +
+              soc_primary +soc_avail_primary +soc_special + soc_cito +
+              soc_interaction + soc_involvement + pub_setup +pub_houses +
+              pub_green + pub_clean_street +pub_clean_green +pub_clean_play +
+              pub_main_street +pub_main_green +pub_main_play + pub_pollution +
+              pub_area_land +pub_area_water + pub_area_green +
+              pub_area_sports +pub_safe_day + pub_safe_night +
+              pub_inc_criminal +pub_inc_neighbors + pub_inc_others +
+              pub_inc_catering + pop_9 +pop_10_19 +pop_20_29 + pop_30_39 +
+              pop_40_49 +pop_50_59 + pop_60_69 +pop_70_79 +pop_80_89 + pop_90 +
+              pop_total +pop_male + pop_female +pop_laborforce +
+              pop_unemployed + pop_dutch +pop_western +pop_nonwestern +
+              pop_household_mar_wo +pop_household_mar_w +
+              pop_household_unm_wo + pop_household_unm_w +
+              pop_household_sin_wo +pop_household_sin_w + pop_household_other +
+              pop_household_total +pop_births + pop_deaths +pop_nl2ams +
+              pop_ams2nl + pop_other2nhood + pop_nhood2other +pop_within , data = training, mtry = 8, ntree = h)
+
+                                        # predict on validation set
+  p <- predict(m, validation)
+
+                                        # Compute evaluation metrics
+                                        # Note how for precision, recall and F we compute the mean score across classes
+  c(a = accuracy(validation$district, p),
+    p = mean(precision(validation$district, p)),
+    r = mean(recall(validation$district, p)),
+    f = mean(f(validation$district, p)))
+}
+#+end_src
+
+#+begin_src R :results silent
+set.seed(0)
+
+pr <- kfold_cv(sopupo, district, 10, seq(200, 600, 100), fit_with_ntrees2)
+
+pivot_longer(pr, cols=-.h, names_to = "metric") %>%
+  ggplot(aes(.h, value, color = metric)) +
+  geom_point() +
+  geom_smooth(se=FALSE) +
+  labs(x = "cost", y = "value") +
+  scale_x_log10()
+#+end_src
+
+Running the following code results in peak performance in all of the metrics at
+400 trees for the first dataset and 300 trees for the second.
+
+*** Optimized models
+
+Model 1
+#+begin_src R :results silent
+forest1 <- randomForest(district ~  hou_total + hou_wheel + hou_boat + hou_sheltered + hou_protected  + hou_corporation + hou_owner + hou_rented + hou_occupants + hou_value +
+hou_value_m2 + hou_satisfaction + hou_condition +
+hou_maintenance + hou_neighborhood + hou_development +
+hou_homefeel + inc_disposable + inc_q1 +
+inc_q2 + inc_q3 + inc_q4 +
+inc_q5 + inc_theil + inc_gini +
+inc_social + inc_social_far + inc_disability +
+inc_unemployment + inc_debt + inc_notifications + pop_9 +pop_10_19 +pop_20_29 +
+pop_30_39 +pop_40_49 +pop_50_59 +
+pop_60_69 +pop_70_79 +pop_80_89 +
+pop_90 +pop_total +pop_male +
+pop_female +pop_laborforce +pop_unemployed +
+pop_dutch +pop_western +pop_nonwestern +
+pop_household_mar_wo +pop_household_mar_w +pop_household_unm_wo +
+pop_household_unm_w +pop_household_sin_wo +pop_household_sin_w +
+pop_household_other +pop_household_total +pop_births +
+pop_deaths +pop_nl2ams +pop_ams2nl +
+pop_other2nhood +pop_nhood2other +pop_within, data = houincpop, mtry = 8, ntree = 400)
+
+forest_p <- predict(forest1)
+
+confusion(forest1, houincpop$district)
+accuracy(houincpop$district, forest_p)
+#+end_src
+
+Model 2
+#+begin_src R :results silent
+forest2 <- randomForest(district ~ soc_fac_cultural +soc_fac_sports +soc_avail_sports +
+                          soc_primary +soc_avail_primary +soc_special + soc_cito +
+                          soc_interaction + soc_involvement + pub_setup +pub_houses +
+                          pub_green + pub_clean_street +pub_clean_green +pub_clean_play +
+                          pub_main_street +pub_main_green +pub_main_play + pub_pollution +
+                          pub_area_land +pub_area_water + pub_area_green +
+                          pub_area_sports +pub_safe_day + pub_safe_night +
+                          pub_inc_criminal +pub_inc_neighbors + pub_inc_others +
+                          pub_inc_catering + pop_9 +pop_10_19 +pop_20_29 + pop_30_39 +
+                          pop_40_49 +pop_50_59 + pop_60_69 +pop_70_79 +pop_80_89 + pop_90 +
+                          pop_total +pop_male + pop_female +pop_laborforce +
+                          pop_unemployed + pop_dutch +pop_western +pop_nonwestern +
+                          pop_household_mar_wo +pop_household_mar_w +
+                          pop_household_unm_wo + pop_household_unm_w +
+                          pop_household_sin_wo +pop_household_sin_w + pop_household_other +
+                          pop_household_total +pop_births + pop_deaths +pop_nl2ams +
+                          pop_ams2nl + pop_other2nhood + pop_nhood2other +pop_within,
+                        data = sopupo, mtry = 8, ntree = 300)
+
+forest2_p <- predict(forest2)
+
+confusion(forest2, sopupo$district)
+accuracy(sopupo$district, forest2_p)
+#+end_src
+
+* Questions
+
+ - Is the 96% accuracy realistic? Am I overfitting? Or testing on the trainset?
+   - Try to reproduce the slide in which we see over fitting.
+ - Should we explain or reason about the classification models in the report?
+   E.g. we see the feature correlation and it corresponds to the decision tree
+   - Can include some reasoning for choosing features or different models:
+     - domain knowledge
+     - feature correlations
+ - Define 'non-trivial' (classifiers, regressors)
+   Trivial:
+   - income based on price of houses, etc.
+   - District based on population
+
+
+** Regression
+
+- Heteroskasticity
+- Fitting lines
